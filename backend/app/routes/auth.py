@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..extensions import db, limiter
 from ..models import User
+from ..services.audit_service import record_audit
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -56,7 +57,7 @@ def register():
             "error": "Password must be at least 12 characters."
         }), 400
 
-    # Public registration never trusts a client-supplied role.
+    # Public registration always creates a viewer.
     if User.query.filter_by(email=email).first():
         return jsonify({
             "error": "An account with this email already exists."
@@ -105,18 +106,57 @@ def login():
 
     email = email.strip().lower()
 
+    if not email or not password:
+        return jsonify({
+            "error": "Email and password are required."
+        }), 400
+
     user = User.query.filter_by(email=email).first()
 
-    # Use the same response for unknown email and wrong password.
+    # Record failed login without storing the password or token.
     if user is None or not user.check_password(password):
+        record_audit(
+            actor_id=user.id if user else None,
+            action="login",
+            resource_type="auth",
+            outcome="failure",
+            ip_address=request.remote_addr,
+            details={"reason": "invalid_credentials"},
+        )
+        db.session.commit()
+
         return jsonify({
             "error": "Invalid email or password."
         }), 401
 
+    # Record attempts from inactive accounts.
     if not user.is_active:
+        record_audit(
+            actor_id=user.id,
+            action="login",
+            resource_type="auth",
+            resource_id=user.id,
+            outcome="denied",
+            ip_address=request.remote_addr,
+            details={"reason": "inactive_account"},
+        )
+        db.session.commit()
+
         return jsonify({
             "error": "This account is inactive."
         }), 403
+
+    # Record successful authentication before issuing the token.
+    record_audit(
+        actor_id=user.id,
+        action="login",
+        resource_type="auth",
+        resource_id=user.id,
+        outcome="success",
+        ip_address=request.remote_addr,
+        details={"reason": "authenticated"},
+    )
+    db.session.commit()
 
     access_token = create_access_token(identity=str(user.id))
 

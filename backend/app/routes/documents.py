@@ -14,7 +14,7 @@ from sqlalchemy import select
 from werkzeug.utils import secure_filename
 
 from ..extensions import db, limiter
-from ..models import Document, Permission, User
+from ..models import Document, Permission, User, GroupMembership, GroupPermission
 from ..services.audit_service import record_audit
 
 documents_bp = Blueprint("documents", __name__)
@@ -80,11 +80,13 @@ def current_active_user():
 
 
 def user_can_access_document(user, document, required_level="read"):
-    """Check current database permissions on every document request."""
+    """Check direct and active group permissions on every request."""
     if user.id == document.owner_id:
         return True
 
-    permission = db.session.scalar(
+    allowed_levels = ("edit",) if required_level == "edit" else ("read", "edit")
+
+    direct_permission = db.session.scalar(
         select(Permission).where(
             Permission.document_id == document.id,
             Permission.user_id == user.id,
@@ -92,13 +94,23 @@ def user_can_access_document(user, document, required_level="read"):
         )
     )
 
-    if permission is None:
-        return False
+    if direct_permission and direct_permission.access_level in allowed_levels:
+        return True
 
-    if required_level == "edit":
-        return permission.access_level == "edit"
+    active_group_ids = select(GroupMembership.group_id).where(
+        GroupMembership.user_id == user.id
+    )
 
-    return permission.access_level in ("read", "edit")
+    group_permission = db.session.scalar(
+        select(GroupPermission.id).where(
+            GroupPermission.document_id == document.id,
+            GroupPermission.group_id.in_(active_group_ids),
+            GroupPermission.is_active.is_(True),
+            GroupPermission.access_level.in_(allowed_levels),
+        ).limit(1)
+    )
+
+    return group_permission is not None
 
 
 def document_response(document):
@@ -295,8 +307,22 @@ def list_documents():
     ).all()
 
     shared_documents = []
-
     for permission in shared_permissions:
+        document = db.session.get(Document, permission.document_id)
+        if document is not None:
+            shared_documents.append(document)
+
+    active_group_ids = select(GroupMembership.group_id).where(
+        GroupMembership.user_id == user.id
+    )
+    group_permissions = db.session.scalars(
+        select(GroupPermission).where(
+            GroupPermission.group_id.in_(active_group_ids),
+            GroupPermission.is_active.is_(True),
+        )
+    ).all()
+
+    for permission in group_permissions:
         document = db.session.get(Document, permission.document_id)
         if document is not None:
             shared_documents.append(document)
