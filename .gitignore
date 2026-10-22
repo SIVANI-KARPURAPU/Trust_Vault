@@ -12,3 +12,9 @@ instance/
 *.sqlite
 
 *.bak
+
+# Local demo/test setup scripts
+create_admin_demo.py
+reset_owner_password.py
+reset_viewer_password.py
+test-document.txt
