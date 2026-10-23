@@ -22,6 +22,9 @@ type DocumentItem = {
 }
 
 type AuthMode = 'login' | 'register'
+type AdminUser = { id: number; name: string; email: string; role: string; is_active?: boolean }
+type AuditLog = { id: number; actor_id?: number | null; action: string; resource_type: string; resource_id?: string | number | null; outcome: string; ip_address?: string | null; details?: Record<string, unknown> | string | null; created_at: string }
+type DashboardTab = 'documents' | 'users' | 'audit'
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
@@ -50,6 +53,20 @@ function App() {
   const [uploading, setUploading] = useState(false)
   const [dashboardMessage, setDashboardMessage] = useState('')
   const [dashboardError, setDashboardError] = useState('')
+  const [activeTab, setActiveTab] = useState<DashboardTab>('documents')
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([])
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false)
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [auditVerification, setAuditVerification] = useState<Record<string, unknown> | null>(null)
+  const [grantDocumentId, setGrantDocumentId] = useState('')
+  const [grantEmail, setGrantEmail] = useState('')
+  const [grantLevel, setGrantLevel] = useState<'read' | 'edit'>('read')
+  const [revokeDocumentId, setRevokeDocumentId] = useState('')
+  const [revokeUserId, setRevokeUserId] = useState('')
+  const [editingDocumentId, setEditingDocumentId] = useState<number | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  const [editingCategory, setEditingCategory] = useState('')
 
   const token = () => sessionStorage.getItem('trustvault_access_token')
 
@@ -228,6 +245,115 @@ function App() {
     }
   }
 
+  async function loadAdminUsers() {
+    setAdminUsersLoading(true)
+    setDashboardError('')
+    try {
+      const response = await apiRequest('/admin/users')
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not load users.'); return }
+      setAdminUsers(Array.isArray(data.users) ? data.users : [])
+    } catch { setDashboardError('Could not connect while loading users.') }
+    finally { setAdminUsersLoading(false) }
+  }
+
+  async function loadAuditLogs() {
+    setAuditLoading(true)
+    setDashboardError('')
+    try {
+      const response = await apiRequest('/admin/audit-logs?page=1&per_page=50')
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not load audit logs.'); return }
+      setAuditLogs(Array.isArray(data.logs) ? data.logs : [])
+    } catch { setDashboardError('Could not connect while loading audit logs.') }
+    finally { setAuditLoading(false) }
+  }
+
+  async function verifyAuditChain() {
+    setDashboardMessage('')
+    setDashboardError('')
+    setAuditVerification(null)
+    try {
+      const response = await apiRequest('/admin/audit-logs/verify')
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Audit verification failed.'); return }
+      setAuditVerification(data)
+      setDashboardMessage(data.valid ? 'Audit chain verification passed.' : 'WARNING: audit chain verification failed.')
+    } catch { setDashboardError('Could not connect while verifying the audit chain.') }
+  }
+
+  async function promoteUser(target: AdminUser) {
+    if (!window.confirm(`Promote ${target.email} to owner?`)) return
+    setDashboardMessage('')
+    setDashboardError('')
+    try {
+      const response = await apiRequest(`/admin/users/${target.id}/role`, { method: 'PATCH', body: JSON.stringify({ role: 'owner' }) })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not update role.'); return }
+      setDashboardMessage(`${target.email} promoted to owner.`)
+      await loadAdminUsers()
+    } catch { setDashboardError('Could not connect while updating role.') }
+  }
+
+  function beginEdit(item: DocumentItem) {
+    setEditingDocumentId(item.id)
+    setEditingTitle(item.title)
+    setEditingCategory(item.category)
+    setDashboardError('')
+    setDashboardMessage('')
+  }
+
+  async function saveDocumentEdit(item: DocumentItem) {
+    if (!editingTitle.trim() || !editingCategory.trim()) { setDashboardError('Title and category are required.'); return }
+    try {
+      const response = await apiRequest(`/documents/${item.id}`, { method: 'PATCH', body: JSON.stringify({ title: editingTitle.trim(), category: editingCategory.trim() }) })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not update document.'); return }
+      setDashboardMessage('Document details updated.')
+      setEditingDocumentId(null)
+      await loadDocuments()
+    } catch { setDashboardError('Could not connect while updating document.') }
+  }
+
+  async function deleteDocument(item: DocumentItem) {
+    if (!window.confirm(`Delete “${item.title}”? This cannot be undone.`)) return
+    try {
+      const response = await apiRequest(`/documents/${item.id}`, { method: 'DELETE' })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not delete document.'); return }
+      setDashboardMessage('Document deleted.')
+      await loadDocuments()
+    } catch { setDashboardError('Could not connect while deleting document.') }
+  }
+
+  async function grantPermission(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const documentId = Number(grantDocumentId)
+    if (!Number.isInteger(documentId) || documentId < 1 || !grantEmail.trim()) { setDashboardError('Enter a valid document ID and email.'); return }
+    try {
+      const response = await apiRequest(`/documents/${documentId}/permissions`, { method: 'POST', body: JSON.stringify({ email: grantEmail.trim(), access_level: grantLevel }) })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not grant permission.'); return }
+      setDashboardMessage(`Granted ${grantLevel} access to ${grantEmail.trim()}.`)
+      setGrantEmail('')
+    } catch { setDashboardError('Could not connect while granting permission.') }
+  }
+
+  async function revokePermission(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const documentId = Number(revokeDocumentId)
+    const targetUserId = Number(revokeUserId)
+    if (!Number.isInteger(documentId) || documentId < 1 || !Number.isInteger(targetUserId) || targetUserId < 1) { setDashboardError('Enter valid document and user IDs.'); return }
+    if (!window.confirm(`Revoke access for user ${targetUserId} to document ${documentId}?`)) return
+    try {
+      const response = await apiRequest(`/documents/${documentId}/permissions/${targetUserId}`, { method: 'DELETE' })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) { setDashboardError(data.error || 'Could not revoke permission.'); return }
+      setDashboardMessage('Permission revoked. The change applies immediately.')
+      setRevokeUserId('')
+    } catch { setDashboardError('Could not connect while revoking permission.') }
+  }
+
   async function handleDownload(item: DocumentItem) {
     setDashboardMessage('')
     setDashboardError('')
@@ -295,9 +421,17 @@ function App() {
           </a>
 
           <div className="sidebar-label">WORKSPACE</div>
-          <div className="sidebar-link active">
+          <button type="button" className={`sidebar-link ${activeTab === 'documents' ? 'active' : ''}`} onClick={() => setActiveTab('documents')}>
             <span>▤</span> Documents
-          </div>
+          </button>
+          {isAdmin && <>
+            <button type="button" className={`sidebar-link ${activeTab === 'users' ? 'active' : ''}`} onClick={() => { setActiveTab('users'); void loadAdminUsers() }}>
+              <span>♙</span> User management
+            </button>
+            <button type="button" className={`sidebar-link ${activeTab === 'audit' ? 'active' : ''}`} onClick={() => { setActiveTab('audit'); void loadAuditLogs() }}>
+              <span>◷</span> Audit trail
+            </button>
+          </>}
           <div className="sidebar-note">
             Your documents, shared securely and managed with control.
           </div>
@@ -377,7 +511,30 @@ function App() {
             </div>
           )}
 
-          {isOwner && (
+          {isAdmin && activeTab === 'users' && (
+            <section className="dashboard-panel management-panel">
+              <div className="panel-heading"><div><h2>User management</h2><p>Review registered accounts. Admin-only actions are checked by the server.</p></div><button className="refresh-button" onClick={() => void loadAdminUsers()} disabled={adminUsersLoading}>↻ Refresh</button></div>
+              {adminUsersLoading ? <p className="admin-hint">Loading users…</p> : adminUsers.length === 0 ? <p className="admin-hint">No users returned.</p> : <div className="table-scroll"><table className="admin-table"><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Action</th></tr></thead><tbody>{adminUsers.map((person) => <tr key={person.id}><td>{person.name || '—'}</td><td>{person.email}</td><td><span className="role-chip">{person.role}</span></td><td>{person.role.toLowerCase() === 'viewer' ? <button className="small-action" onClick={() => void promoteUser(person)}>Promote to owner</button> : <span className="admin-hint">No action</span>}</td></tr>)}</tbody></table></div>}
+            </section>
+          )}
+
+          {isAdmin && activeTab === 'audit' && (
+            <section className="dashboard-panel management-panel">
+              <div className="panel-heading"><div><h2>Audit trail</h2><p>Recent security-relevant events and hash-chain integrity.</p></div><div className="panel-actions"><button className="refresh-button" onClick={() => void loadAuditLogs()} disabled={auditLoading}>↻ Refresh</button><button className="small-action" onClick={() => void verifyAuditChain()}>Verify chain</button></div></div>
+              {auditVerification && <div className={`verification-result ${auditVerification.valid ? 'verification-ok' : 'verification-fail'}`} role="status"><strong>{auditVerification.valid ? 'Chain valid' : 'Chain verification failed'}</strong><span>{String(auditVerification.entries_checked ?? 0)} entries checked</span>{auditVerification.last_hash ? <code>{String(auditVerification.last_hash)}</code> : null}</div>}
+              {auditLoading ? <p className="admin-hint">Loading audit events…</p> : auditLogs.length === 0 ? <p className="admin-hint">No audit events returned.</p> : <div className="table-scroll"><table className="admin-table"><thead><tr><th>Time</th><th>Action</th><th>Resource</th><th>Outcome</th><th>Actor</th><th>Details</th></tr></thead><tbody>{auditLogs.map((log) => <tr key={log.id}><td>{new Date(log.created_at).toLocaleString()}</td><td>{log.action}</td><td>{log.resource_type}{log.resource_id ? ` #${log.resource_id}` : ''}</td><td><span className={`outcome-chip ${log.outcome.toLowerCase() === 'success' || log.outcome.toLowerCase() === 'allowed' ? 'outcome-good' : 'outcome-other'}`}>{log.outcome}</span></td><td>{log.actor_id ?? 'System/unknown'}</td><td className="audit-details">{typeof log.details === 'string' ? log.details : JSON.stringify(log.details ?? {})}</td></tr>)}</tbody></table></div>}
+            </section>
+          )}
+
+          {activeTab === 'documents' && isOwner && (
+            <section className="dashboard-panel management-panel">
+              <div className="panel-heading"><div><h2>Document permissions</h2><p>Grant named users read/edit access or revoke an existing grant.</p></div><span className="panel-tag">OWNER</span></div>
+              <form className="permission-form" onSubmit={grantPermission}><h3>Grant access</h3><div className="permission-fields"><label>Document ID<input type="number" min="1" value={grantDocumentId} onChange={(event) => setGrantDocumentId(event.target.value)} placeholder="e.g. 12" required /></label><label>User email<input type="email" value={grantEmail} onChange={(event) => setGrantEmail(event.target.value)} placeholder="person@example.com" required /></label><label>Access level<select value={grantLevel} onChange={(event) => setGrantLevel(event.target.value as 'read' | 'edit')}><option value="read">Read only</option><option value="edit">Read and edit</option></select></label><button className="small-action" type="submit">Grant access</button></div></form>
+              <form className="permission-form revoke-form" onSubmit={revokePermission}><h3>Revoke access</h3><p className="admin-hint">Enter the document ID and the target user's numeric ID. Revocation is enforced by the backend.</p><div className="permission-fields"><label>Document ID<input type="number" min="1" value={revokeDocumentId} onChange={(event) => setRevokeDocumentId(event.target.value)} placeholder="e.g. 12" required /></label><label>Target user ID<input type="number" min="1" value={revokeUserId} onChange={(event) => setRevokeUserId(event.target.value)} placeholder="e.g. 4" required /></label><button className="danger-action" type="submit">Revoke access</button></div></form>
+            </section>
+          )}
+
+          {activeTab === 'documents' && isOwner && (
             <section className="dashboard-panel">
               <div className="panel-heading">
                 <div>
@@ -432,7 +589,7 @@ function App() {
             </section>
           )}
 
-          <section className="dashboard-panel documents-panel">
+          {activeTab === 'documents' && <section className="dashboard-panel documents-panel">
             <div className="panel-heading documents-heading">
               <div>
                 <h2>Your documents</h2>
@@ -489,27 +646,17 @@ function App() {
                   <article className="document-row" key={item.id}>
                     <div className="document-file-icon">PDF</div>
                     <div className="document-details">
-                      <strong>{item.title}</strong>
-                      <span>{item.original_filename}</span>
-                      <div className="document-meta">
-                        <span>{item.category}</span>
-                        <span>{formatBytes(item.size_bytes)}</span>
-                        <span>
-                          {new Date(item.created_at).toLocaleDateString()}
-                        </span>
-                      </div>
+                      {editingDocumentId === item.id ? <div className="inline-edit-fields"><input aria-label="Document title" value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} maxLength={255} /><input aria-label="Document category" value={editingCategory} onChange={(event) => setEditingCategory(event.target.value)} maxLength={100} /></div> : <><strong>{item.title}</strong><span>{item.original_filename}</span><div className="document-meta"><span>{item.category}</span><span>{formatBytes(item.size_bytes)}</span><span>{new Date(item.created_at).toLocaleDateString()}</span></div></>}
                     </div>
-                    <button
-                      className="download-button"
-                      onClick={() => void handleDownload(item)}
-                    >
-                      Download <span>↓</span>
-                    </button>
+                    <div className="document-actions">
+                      <button className="download-button" onClick={() => void handleDownload(item)}>Download <span>↓</span></button>
+                      {isOwner && (editingDocumentId === item.id ? <><button className="small-action" onClick={() => void saveDocumentEdit(item)}>Save</button><button className="refresh-button" onClick={() => setEditingDocumentId(null)}>Cancel</button> </> : <><button className="small-action" onClick={() => beginEdit(item)}>Edit</button><button className="danger-action" onClick={() => void deleteDocument(item)}>Delete</button></>)}
+                    </div>
                   </article>
                 ))}
               </div>
             )}
-          </section>
+          </section>}
 
           <footer className="dashboard-footer">
             <span>© 2026 TrustVault</span>
