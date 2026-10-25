@@ -164,3 +164,27 @@ code {
     font-size: 20px;
   }
 }
+
+html,
+body,
+#root {
+  min-height: 100%;
+  height: auto;
+  margin: 0;
+}
+
+body {
+  overflow-y: auto;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.login-page,
+.login-container,
+.auth-page {
+  min-height: 100vh;
+  height: auto;
+  overflow: visible;
+}
