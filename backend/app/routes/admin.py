@@ -1,4 +1,3 @@
-
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy import select
@@ -37,7 +36,11 @@ def promote_user(user_id):
         }), 400
 
     requested_role = data.get("role")
-    new_role = requested_role.strip().lower() if isinstance(requested_role, str) else None
+    new_role = (
+        requested_role.strip().lower()
+        if isinstance(requested_role, str)
+        else None
+    )
 
     if new_role not in ("owner", "viewer"):
         return jsonify({
@@ -66,12 +69,17 @@ def promote_user(user_id):
 
     admin_id = int(get_jwt_identity())
 
+    # Keep the role change and its audit entry in one transaction.
     try:
         user.role = new_role
 
         record_audit(
             actor_id=admin_id,
-            action="role_changed",
+            action=(
+                "role_promoted"
+                if previous_role == "viewer" and new_role == "owner"
+                else "role_changed"
+            ),
             resource_type="user",
             resource_id=user.id,
             outcome="success",
