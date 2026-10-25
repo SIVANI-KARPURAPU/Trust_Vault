@@ -18,6 +18,9 @@ type DocumentItem = {
   category: string
   size_bytes: number
   created_at: string
+  owner_id?: number
+  owner_name?: string | null
+  owner_email?: string | null
 }
 
 type AuthMode = 'login' | 'register'
@@ -1258,8 +1261,36 @@ function App() {
           {activeTab === 'access' && (isOwner || isAdmin) && (
             <section className="dashboard-panel management-panel">
               <div className="panel-heading"><div><h2>Document permissions</h2><p>Grant read/edit access or revoke an existing grant.</p></div><span className="panel-tag">OWNER</span></div>
-              <form className="permission-form" onSubmit={grantPermission}><h3>Grant access</h3><div className="permission-fields"><label>Document ID<input type="number" min="1" value={grantDocumentId} onChange={event => setGrantDocumentId(event.target.value)} placeholder="e.g. 12" required /></label><label>User email<input type="email" value={grantEmail} onChange={event => setGrantEmail(event.target.value)} placeholder="person@example.com" required /></label><label>Access level<select value={grantLevel} onChange={event => setGrantLevel(event.target.value as 'read' | 'edit')}><option value="read">Read only</option><option value="edit">Read and edit</option></select></label><button className="small-action" type="submit">Grant access</button></div></form>
-              <form className="permission-form revoke-form" onSubmit={revokePermission}><h3>Revoke access</h3><p className="admin-hint">Enter the document ID and target user's numeric ID.</p><div className="permission-fields"><label>Document ID<input type="number" min="1" value={revokeDocumentId} onChange={event => setRevokeDocumentId(event.target.value)} placeholder="e.g. 12" required /></label><label>Target user ID<input type="number" min="1" value={revokeUserId} onChange={event => setRevokeUserId(event.target.value)} placeholder="e.g. 4" required /></label><button className="danger-action" type="submit">Revoke access</button></div></form>
+              <form className="permission-form" onSubmit={grantPermission}><h3>Grant access</h3><div className="permission-fields"><label>
+  Select document
+  <select
+    value={grantDocumentId}
+    onChange={event => setGrantDocumentId(event.target.value)}
+    required
+  >
+    <option value="">Choose a document</option>
+    {documents.map(document => (
+      <option key={document.id} value={document.id}>
+        {document.title} (ID: {document.id})
+      </option>
+    ))}
+  </select>
+</label><label>User email<input type="email" value={grantEmail} onChange={event => setGrantEmail(event.target.value)} placeholder="person@example.com" required /></label><label>Access level<select value={grantLevel} onChange={event => setGrantLevel(event.target.value as 'read' | 'edit')}><option value="read">Read only</option><option value="edit">Read and edit</option></select></label><button className="small-action" type="submit">Grant access</button></div></form>
+              <form className="permission-form revoke-form" onSubmit={revokePermission}><h3>Revoke access</h3><p className="admin-hint">Enter the document ID and target user's numeric ID.</p><div className="permission-fields"><label>
+  Select document
+  <select
+    value={revokeDocumentId}
+    onChange={event => setRevokeDocumentId(event.target.value)}
+    required
+  >
+    <option value="">Choose a document</option>
+    {documents.map(document => (
+      <option key={document.id} value={document.id}>
+        {document.title} (ID: {document.id})
+      </option>
+    ))}
+  </select>
+</label><label>Target user ID<input type="number" min="1" value={revokeUserId} onChange={event => setRevokeUserId(event.target.value)} placeholder="e.g. 4" required /></label><button className="danger-action" type="submit">Revoke access</button></div></form>
             </section>
           )}
 

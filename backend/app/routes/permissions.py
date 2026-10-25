@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -26,13 +25,16 @@ def get_active_user():
     return user
 
 
-def get_owned_document(document_id, user):
-    return db.session.scalar(
-        select(Document).where(
-            Document.id == document_id,
-            Document.owner_id == user.id,
-        )
-    )
+def get_manageable_document(document_id, user):
+    document = db.session.get(Document, document_id)
+
+    if document is None:
+        return None
+
+    if user.role == "admin" or document.owner_id == user.id:
+        return document
+
+    return None
 
 
 def log_permission_denial(user, action, document_id, details=None):
@@ -59,9 +61,14 @@ def log_permission_denial(user, action, document_id, details=None):
 @permissions_bp.post("/documents/<int:document_id>/permissions")
 @jwt_required()
 def grant_permission(document_id):
-    owner = get_active_user()
+    actor = get_active_user()
 
-    if owner is None:
+    # TEMPORARY DEBUG: remove after verifying the role
+    print("DEBUG JWT ID:", get_jwt_identity())
+    print("DEBUG ACTOR EMAIL:", actor.email if actor else None)
+    print("DEBUG ACTOR ROLE:", repr(actor.role) if actor else None)
+
+    if actor is None:
         if not log_permission_denial(
             None, "permission.grant", document_id,
             {"reason": "inactive_or_missing_account"},
@@ -70,22 +77,22 @@ def grant_permission(document_id):
 
         return jsonify({"error": "Account not found or inactive."}), 401
 
-    if owner.role != "owner":
+    if actor.role not in ("owner", "admin"):
         if not log_permission_denial(
-            owner, "permission.grant", document_id,
-            {"reason": "owner_role_required"},
+            actor, "permission.grant", document_id,
+            {"reason": "owner_or_admin_role_required"},
         ):
             return jsonify({"error": "Audit logging failed."}), 500
 
         return jsonify({
-            "error": "Only owners can manage document permissions."
+            "error": "Only owners and admins can manage document permissions."
         }), 403
 
-    document = get_owned_document(document_id, owner)
+    document = get_manageable_document(document_id, actor)
 
     if document is None:
         if not log_permission_denial(
-            owner, "permission.grant", document_id,
+            actor, "permission.grant", document_id,
             {"reason": "document_not_found_or_not_owned"},
         ):
             return jsonify({"error": "Audit logging failed."}), 500
@@ -119,8 +126,8 @@ def grant_permission(document_id):
     if target_user is None:
         return jsonify({"error": "Active target user not found."}), 404
 
-    if target_user.id == owner.id:
-        return jsonify({"error": "You already own this document."}), 400
+    if target_user.id == document.owner_id:
+        return jsonify({"error": "The document owner already has access."}), 400
 
     permission = db.session.scalar(
         select(Permission).where(
@@ -136,19 +143,19 @@ def grant_permission(document_id):
                 user_id=target_user.id,
                 access_level=access_level,
                 is_active=True,
-                granted_by=owner.id,
+                granted_by=actor.id,
             )
             db.session.add(permission)
         else:
             permission.access_level = access_level
             permission.is_active = True
-            permission.granted_by = owner.id
+            permission.granted_by = actor.id
             permission.revoked_at = None
 
         db.session.flush()
 
         record_audit(
-            actor_id=owner.id,
+            actor_id=actor.id,
             action="permission.grant",
             resource_type="permission",
             resource_id=document.id,
@@ -156,6 +163,7 @@ def grant_permission(document_id):
             ip_address=request.remote_addr,
             details={
                 "document_id": document.id,
+                "document_owner_id": document.owner_id,
                 "target_user_id": target_user.id,
                 "target_email": target_user.email,
                 "access_level": access_level,
@@ -187,9 +195,14 @@ def grant_permission(document_id):
 )
 @jwt_required()
 def revoke_permission(document_id, target_user_id):
-    owner = get_active_user()
+    actor = get_active_user()
 
-    if owner is None:
+    # TEMPORARY DEBUG: remove after verifying the role
+    print("DEBUG JWT ID:", get_jwt_identity())
+    print("DEBUG ACTOR EMAIL:", actor.email if actor else None)
+    print("DEBUG ACTOR ROLE:", repr(actor.role) if actor else None)
+
+    if actor is None:
         if not log_permission_denial(
             None, "permission.revoke", document_id,
             {
@@ -201,25 +214,25 @@ def revoke_permission(document_id, target_user_id):
 
         return jsonify({"error": "Account not found or inactive."}), 401
 
-    if owner.role != "owner":
+    if actor.role not in ("owner", "admin"):
         if not log_permission_denial(
-            owner, "permission.revoke", document_id,
+            actor, "permission.revoke", document_id,
             {
                 "target_user_id": target_user_id,
-                "reason": "owner_role_required",
+                "reason": "owner_or_admin_role_required",
             },
         ):
             return jsonify({"error": "Audit logging failed."}), 500
 
         return jsonify({
-            "error": "Only owners can manage document permissions."
+            "error": "Only owners and admins can manage document permissions."
         }), 403
 
-    document = get_owned_document(document_id, owner)
+    document = get_manageable_document(document_id, actor)
 
     if document is None:
         if not log_permission_denial(
-            owner, "permission.revoke", document_id,
+            actor, "permission.revoke", document_id,
             {
                 "target_user_id": target_user_id,
                 "reason": "document_not_found_or_not_owned",
@@ -239,7 +252,7 @@ def revoke_permission(document_id, target_user_id):
 
     if permission is None:
         if not log_permission_denial(
-            owner, "permission.revoke", document_id,
+            actor, "permission.revoke", document_id,
             {
                 "target_user_id": target_user_id,
                 "reason": "active_permission_not_found",
@@ -254,7 +267,7 @@ def revoke_permission(document_id, target_user_id):
         permission.revoked_at = datetime.now(timezone.utc)
 
         record_audit(
-            actor_id=owner.id,
+            actor_id=actor.id,
             action="permission.revoke",
             resource_type="permission",
             resource_id=document.id,
@@ -262,6 +275,7 @@ def revoke_permission(document_id, target_user_id):
             ip_address=request.remote_addr,
             details={
                 "document_id": document.id,
+                "document_owner_id": document.owner_id,
                 "target_user_id": target_user_id,
             },
         )

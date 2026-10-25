@@ -121,6 +121,9 @@ def document_response(document):
         "category": document.category,
         "size_bytes": document.size_bytes,
         "created_at": document.created_at.isoformat(),
+        "owner_id": document.owner_id,
+        "owner_name": document.owner.name if document.owner else None,
+        "owner_email": document.owner.email if document.owner else None,
     }
 
 
@@ -293,6 +296,7 @@ def upload_document():
     }), 201
 
 
+
 @documents_bp.get("/documents")
 @jwt_required()
 def list_documents():
@@ -301,16 +305,16 @@ def list_documents():
     if user is None:
         return jsonify({"error": "Account not found or inactive."}), 401
 
+    # Candidate documents: owned, directly shared, or group-shared.
     owned_documents = db.session.scalars(
-        select(Document)
-        .where(Document.owner_id == user.id)
-        .order_by(Document.created_at.desc())
+        select(Document).where(Document.owner_id == user.id)
     ).all()
 
     shared_permissions = db.session.scalars(
         select(Permission).where(
             Permission.user_id == user.id,
             Permission.is_active.is_(True),
+            Permission.access_level.in_(("read", "edit")),
         )
     ).all()
 
@@ -323,10 +327,12 @@ def list_documents():
     active_group_ids = select(GroupMembership.group_id).where(
         GroupMembership.user_id == user.id
     )
+
     group_permissions = db.session.scalars(
         select(GroupPermission).where(
             GroupPermission.group_id.in_(active_group_ids),
             GroupPermission.is_active.is_(True),
+            GroupPermission.access_level.in_(("read", "edit")),
         )
     ).all()
 
@@ -335,9 +341,11 @@ def list_documents():
         if document is not None:
             shared_documents.append(document)
 
+    # Revalidate access before including any document in the response.
     documents_by_id = {
         document.id: document
         for document in owned_documents + shared_documents
+        if user_can_access_document(user, document, required_level="read")
     }
 
     documents = sorted(
@@ -352,7 +360,6 @@ def list_documents():
             for document in documents
         ]
     }), 200
-
 
 @documents_bp.get("/documents/<int:document_id>/download")
 @jwt_required()
