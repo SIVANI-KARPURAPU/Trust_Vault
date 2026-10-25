@@ -4,7 +4,7 @@ from flask_jwt_extended import jwt_required
 from sqlalchemy import select
 
 from ..extensions import db
-from ..models import AuditLog
+from ..models import AuditLog, User
 from ..security.authorization import role_required
 from ..services.audit_service import verify_audit_chain
 
@@ -67,6 +67,45 @@ def list_audit_logs():
         from flask import current_app
         current_app.logger.exception("Failed to retrieve audit logs")
         return jsonify({"error": "Could not retrieve audit logs."}), 500
+
+
+
+
+@audit_bp.get("/admin/audit-logs/stats")
+@jwt_required()
+@role_required("admin")
+def audit_log_stats():
+    """Return aggregate audit statistics based on persisted audit records."""
+    try:
+        entries = db.session.scalars(
+            select(AuditLog.action, AuditLog.outcome)
+        ).all()
+
+        total = len(entries)
+        successful = sum(
+            1 for _action, outcome in entries
+            if str(outcome).lower() in ("success", "allowed")
+        )
+        login_events = sum(
+            1 for action, _outcome in entries
+            if "login" in str(action).lower()
+            or "auth" in str(action).lower()
+        )
+
+        return jsonify({
+            "total_events": total,
+            "successful_events": successful,
+            "failed_events": total - successful,
+            "login_events": login_events,
+        }), 200
+
+    except Exception:
+        db.session.rollback()
+        from flask import current_app
+        current_app.logger.exception("Failed to calculate audit statistics")
+        return jsonify({
+            "error": "Could not retrieve audit statistics."
+        }), 500
 
 
 @audit_bp.get("/admin/audit-logs/verify")

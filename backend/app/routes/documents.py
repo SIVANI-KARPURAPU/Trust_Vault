@@ -168,6 +168,13 @@ def log_denied_audit(
 @limiter.limit("10 per hour")
 def upload_document():
     user = current_active_user()
+    if user is not None:
+        current_app.logger.warning(
+            "DEBUG UPLOAD USER: id=%s email=%r role=%r",
+            user.id, user.email, user.role,
+        )
+    else:
+        current_app.logger.warning("DEBUG UPLOAD USER: no active user resolved")
 
     if user is None:
         if not log_denied_audit(
@@ -180,16 +187,17 @@ def upload_document():
 
         return jsonify({"error": "Account not found or inactive."}), 401
 
-    if user.role != "owner":
+    # Owners and admins may upload documents. Viewers remain read-only.
+    if str(user.role).lower() not in {"owner", "admin"}:
         if not log_denied_audit(
             user=user,
             action="document.upload",
             resource_type="document",
-            details={"reason": "owner_role_required"},
+            details={"reason": "owner_or_admin_role_required"},
         ):
             return jsonify({"error": "Audit logging failed."}), 500
 
-        return jsonify({"error": "Only owners can upload documents."}), 403
+        return jsonify({"error": "Only owners and admins can upload documents."}), 403
 
     uploaded_file = request.files.get("file")
     title = request.form.get("title", "").strip()

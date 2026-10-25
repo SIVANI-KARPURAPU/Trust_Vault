@@ -36,9 +36,12 @@ def promote_user(user_id):
             "error": "A JSON request body is required."
         }), 400
 
-    if data.get("role") != "owner":
+    requested_role = data.get("role")
+    new_role = requested_role.strip().lower() if isinstance(requested_role, str) else None
+
+    if new_role not in ("owner", "viewer"):
         return jsonify({
-            "error": "Only promotion to owner is supported."
+            "error": "Role must be either 'owner' or 'viewer'."
         }), 400
 
     user = db.session.get(User, user_id)
@@ -53,33 +56,43 @@ def promote_user(user_id):
             "error": "An admin account cannot be changed here."
         }), 409
 
-    if user.role == "owner":
+    previous_role = str(user.role).strip().lower()
+
+    if previous_role == new_role:
         return jsonify({
-            "message": "User is already an owner.",
+            "message": f"User already has the {new_role} role.",
             "user": user.to_dict(),
         }), 200
 
-    previous_role = user.role
     admin_id = int(get_jwt_identity())
 
-    user.role = "owner"
+    try:
+        user.role = new_role
 
-    record_audit(
-        actor_id=admin_id,
-        action="role_promoted",
-        resource_type="user",
-        resource_id=user.id,
-        outcome="success",
-        ip_address=request.remote_addr,
-        details={
-            "previous_role": previous_role,
-            "new_role": "owner",
-        },
-    )
+        record_audit(
+            actor_id=admin_id,
+            action="role_changed",
+            resource_type="user",
+            resource_id=user.id,
+            outcome="success",
+            ip_address=request.remote_addr,
+            details={
+                "previous_role": previous_role,
+                "new_role": new_role,
+            },
+        )
 
-    db.session.commit()
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+        return jsonify({
+            "error": "Role update failed. No changes were saved."
+        }), 500
 
     return jsonify({
-        "message": "User promoted to owner successfully.",
+        "message": (
+            f"User role changed from {previous_role} to {new_role}."
+        ),
         "user": user.to_dict(),
     }), 200
